@@ -1,82 +1,87 @@
-from collections import defaultdict
-from app.config.constants import STAR_PHENOTYPE_MAP, SUPPORTED_GENES
+from app.config.constants import ALLELE_FUNCTION, PHENOTYPE_THRESHOLDS, SUPPORTED_GENES
+from app.services.vcf_parser import ParsedVCF
 
-def build_profile(variants):
-    # 1. Initialize all supported genes with an empty baseline
-    gene_data = {
-        gene: {"stars": [], "rsids": [], "genotypes": []} 
-        for gene in SUPPORTED_GENES
-    }
+# status values: "called" (phenotype resolved), "indeterminate" (variants present but
+# not interpretable), "not_covered" (gene absent from the VCF).
 
-    # 2. Collect variants per gene (only true mutations passed from parse_vcf)
-    for variant in variants:
-        gene = variant["gene"]
-        if gene in gene_data:
-            gene_data[gene]["stars"].append(variant["star"])
-            gene_data[gene]["rsids"].append(variant["rsid"])
-            # Safely get genotype, default to heterozygous 0/1 if missing
-            gene_data[gene]["genotypes"].append(variant.get("genotype", "0/1"))
 
+def build_profile(parsed: ParsedVCF):
     profile = {}
-
-    for gene, data in gene_data.items():
-        stars = data["stars"]
-        rsids = data["rsids"]
-        genotypes = data["genotypes"]
-
-        # 3. Build diplotype with baseline *1 logic
-        if len(stars) == 0:
-            # No mutations found -> Patient is Wild-Type
-            diplotype_alleles = ["*1", "*1"]
-            
-        elif len(stars) == 1:
-            # One mutation found -> Check if Heterozygous (0/1) or Homozygous (1/1)
-            gt = genotypes[0]
-            if gt in ["1/1", "1|1"]:
-                diplotype_alleles = [stars[0], stars[0]]
-            else:
-                # Heterozygous means they have one normal *1 allele and one mutated allele
-                diplotype_alleles = ["*1", stars[0]]
-                
-        else:
-            # Multiple mutations found
-            diplotype_alleles = [stars[0], stars[1]]
-
-        diplotype = f"{diplotype_alleles[0]}/{diplotype_alleles[1]}"
-        
-        # Resolve phenotype using the two determined alleles
-        phenotype = resolve_phenotype(gene, diplotype_alleles)
-
-        profile[gene] = {
-            "diplotype": diplotype,
-            "phenotype": phenotype,
-            "detected_variants": rsids
-        }
-
+    for gene in sorted(SUPPORTED_GENES):
+        profile[gene] = _build_gene(gene, [r for r in parsed.records if r.gene == gene])
     return profile
 
 
-def resolve_phenotype(gene, alleles):
-    mapping = STAR_PHENOTYPE_MAP.get(gene, {})
+def _entry(status, phenotype, diplotype=None, rsids=None, warnings=None, phase_ambiguous=False):
+    return {
+        "status": status,
+        "diplotype": diplotype,
+        "phenotype": phenotype,
+        "detected_variants": rsids or [],
+        "phase_ambiguous": phase_ambiguous,
+        "warnings": warnings or [],
+    }
 
-    if not alleles:
-        return "Unknown"
 
-    # Map each allele in the diplotype to its functional status
-    phenotypes = [mapping.get(allele, "Unknown") for allele in alleles]
+def _build_gene(gene, records):
+    if not records:
+        return _entry(
+            "not_covered", "Unknown",
+            warnings=[f"No {gene} records in the VCF; genotype was not assessed."],
+        )
 
-    # Simplified risk logic (Highest severity dominates)
-    if "PM" in phenotypes:
-        return "PM"
-    if "Poor" in phenotypes:
-        return "Poor"
-    if "IM" in phenotypes:
-        return "IM"
-    if "Decreased" in phenotypes:
-        return "Decreased"
-    if "Normal" in phenotypes:
-        return "Normal"
-    if "NM" in phenotypes:
-        return "NM"
+    carriers = [r for r in records if r.alt_copies > 0]
+    rsids = [r.rsid for r in carriers]
+    warnings = []
 
-    return "Unknown"
+    # A no-call means a variant cannot be ruled out, so a "wild-type" answer is unsafe.
+    no_calls = [r.rsid for r in records if r.no_call]
+    if no_calls:
+        return _entry(
+            "indeterminate", "Indeterminate", rsids=rsids,
+            warnings=[f"No-call genotype at {', '.join(no_calls)}; {gene} cannot be interpreted."],
+        )
+
+    alleles = []
+    for r in carriers:
+        alleles.extend([r.star] * r.alt_copies)
+
+    if len(alleles) > 2:
+        return _entry(
+            "indeterminate", "Indeterminate", rsids=rsids,
+            warnings=[f"{len(alleles)} variant alleles reported for {gene}; a diploid genotype has two."],
+        )
+
+    unknown = sorted({a for a in alleles if a not in ALLELE_FUNCTION[gene]})
+    if unknown:
+        return _entry(
+            "indeterminate", "Indeterminate", rsids=rsids,
+            warnings=[f"Allele(s) {', '.join(unknown)} have no known function mapping for {gene}."],
+        )
+
+    alleles = sorted(alleles + ["*1"] * (2 - len(alleles)), key=_allele_sort_key)
+    # More than one heterozygous site: whether they sit on different chromosomes is unknown
+    # without phasing, so the diplotype is the most likely one rather than a certainty.
+    phase_ambiguous = sum(1 for r in carriers if r.alt_copies == 1) > 1
+    if phase_ambiguous:
+        warnings.append(f"Multiple heterozygous {gene} variants; phase unknown, diplotype assumes trans.")
+
+    score = sum(ALLELE_FUNCTION[gene][a] for a in alleles)
+    return _entry(
+        "called", _phenotype_from_score(gene, score),
+        diplotype="/".join(alleles), rsids=rsids, warnings=warnings,
+        phase_ambiguous=phase_ambiguous,
+    )
+
+
+def _allele_sort_key(star):
+    """Canonical order: *1 first, then by allele number, then suffix (*3A before *3C)."""
+    digits = "".join(ch for ch in star if ch.isdigit())
+    return int(digits), star
+
+
+def _phenotype_from_score(gene, score):
+    for ceiling, phenotype in PHENOTYPE_THRESHOLDS[gene]:
+        if score <= ceiling:
+            return phenotype
+    return "Indeterminate"

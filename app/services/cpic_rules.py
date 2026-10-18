@@ -45,23 +45,6 @@ CPIC_RULES = {
                 "severity": "none",
                 "recommendation": "Standard initial dosing."
             }
-        },
-        "VKORC1": {
-            "High Sensitivity": {
-                "risk_label": "Toxic",
-                "severity": "high",
-                "recommendation": "Lower initial dose due to increased warfarin sensitivity."
-            },
-            "Intermediate Sensitivity": {
-                "risk_label": "Adjust Dosage",
-                "severity": "moderate",
-                "recommendation": "Consider lower starting dose."
-            },
-            "Low Sensitivity": {
-                "risk_label": "Reduced Response",
-                "severity": "moderate",
-                "recommendation": "May require higher dose to achieve therapeutic INR."
-            }
         }
     },
 
@@ -132,23 +115,6 @@ CPIC_RULES = {
                 "severity": "none",
                 "recommendation": "Use standard dosing."
             }
-        },
-        "NUDT15": {
-            "PM": {
-                "risk_label": "Toxic",
-                "severity": "critical",
-                "recommendation": "Avoid azathioprine due to severe myelosuppression risk."
-            },
-            "IM": {
-                "risk_label": "Adjust Dosage",
-                "severity": "high",
-                "recommendation": "Substantially reduce starting dose."
-            },
-            "NM": {
-                "risk_label": "Safe",
-                "severity": "none",
-                "recommendation": "Standard dosing appropriate."
-            }
         }
     },
 
@@ -173,31 +139,49 @@ CPIC_RULES = {
     }
 }
 
-def evaluate_drug_risk(drug: str, profile: dict):
+CONFIDENCE_CLEAN = 0.95
+CONFIDENCE_PHASE_AMBIGUOUS = 0.75
 
+
+def evaluate_drug_risk(drug: str, profile: dict):
+    """Look up the CPIC rule for a drug from the patient's primary-gene phenotype.
+
+    Genes that were not genotyped, or could not be interpreted, yield an explicit
+    "Unknown"/"Indeterminate" result rather than a reassuring default.
+    """
     drug = drug.upper()
 
     if drug not in PRIMARY_GENE_MAP:
-        return unknown_response()
+        raise ValueError(f"Unsupported drug: {drug}")
 
     gene = PRIMARY_GENE_MAP[drug]
+    gene_profile = profile.get(gene)
 
-    if gene not in profile:
-        return unknown_response()
+    if gene_profile is None or gene_profile["status"] == "not_covered":
+        return unknown_response(
+            "Unknown",
+            f"{gene} was not genotyped in the uploaded VCF, so no pharmacogenomic guidance can be given.",
+        )
 
-    phenotype = profile[gene]["phenotype"]
+    if gene_profile["status"] != "called":
+        detail = " ".join(gene_profile["warnings"]) or f"{gene} genotype could not be interpreted."
+        return unknown_response("Indeterminate", f"{gene} genotype could not be interpreted. {detail}")
 
     gene_rules = CPIC_RULES.get(drug, {}).get(gene, {})
+    rule = gene_rules.get(gene_profile["phenotype"])
+    if rule is None:
+        return unknown_response(
+            "Unknown",
+            f"No CPIC rule for {gene} phenotype '{gene_profile['phenotype']}' with {drug.title()}.",
+        )
 
-    if phenotype not in gene_rules:
-        return unknown_response()
-
-    rule = gene_rules[phenotype]
+    confidence = CONFIDENCE_PHASE_AMBIGUOUS if gene_profile["phase_ambiguous"] else CONFIDENCE_CLEAN
 
     return {
         "risk_label": rule["risk_label"],
         "severity": rule["severity"],
-        "confidence_score": 1.0,
+        # Heuristic data-completeness score, not a statistical probability.
+        "confidence_score": confidence,
         "clinical_recommendation": {
             "guideline_source": "CPIC",
             "recommendation_summary": rule["recommendation"],
@@ -206,15 +190,16 @@ def evaluate_drug_risk(drug: str, profile: dict):
         }
     }
 
-def unknown_response():
+
+def unknown_response(risk_label: str, reason: str):
     return {
-        "risk_label": "Unknown",
-        "severity": "none",
+        "risk_label": risk_label,
+        "severity": "unknown",
         "confidence_score": 0.0,
         "clinical_recommendation": {
             "guideline_source": "CPIC",
-            "recommendation_summary": "No actionable pharmacogenomic variant detected.",
-            "dose_adjustment": "No specific adjustment recommended.",
-            "monitoring_advice": "Follow standard clinical practice."
+            "recommendation_summary": reason,
+            "dose_adjustment": "No pharmacogenomic dose adjustment can be derived from this result.",
+            "monitoring_advice": "Follow standard clinical practice and consider clinical pharmacogenomic consultation."
         }
     }

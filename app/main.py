@@ -1,19 +1,17 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+import logging
 import os
 
-# Import routers
-from app.routes import validate 
-from app.routes import profile
-from app.routes import risk
-from app.routes import explanation
-from app.routes import full_analysis
-
 from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 load_dotenv()
+
+from app.routes import full_analysis, validate  # noqa: E402
+
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 
 app = FastAPI(
     title="PharmaGuard API",
@@ -24,18 +22,21 @@ app = FastAPI(
 # ---------------------------
 # CORS Configuration
 # ---------------------------
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # For hackathon; restrict later if needed
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The frontend is served from this same origin, so CORS is off unless
+# CORS_ORIGINS (comma-separated) is set for a separately hosted frontend.
+cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+if cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_origins,
+        allow_methods=["GET", "POST"],
+        allow_headers=["*"],
+    )
 
 # ---------------------------
 # Frontend Path Resolution
 # ---------------------------
-project_root = os.path.dirname(os.path.dirname(__file__))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 frontend_candidates = [
     os.path.join(project_root, "frontend"),
     os.path.join(project_root, "Frontend"),
@@ -64,9 +65,6 @@ async def serve_landing_page():
 # Include Routers
 # ---------------------------
 app.include_router(validate.router)
-app.include_router(profile.router)
-app.include_router(risk.router)
-app.include_router(explanation.router)
 app.include_router(full_analysis.router)
 
 # ---------------------------

@@ -6,7 +6,7 @@ PharmaGuard is an interpretable AI system that predicts patient-specific drug re
 
 ## 🔗 Links
 
-- **Live Demo**: https://pharmaguard-production.up.railway.app
+- **Live Demo**: https://pharmaguard-sigma.vercel.app
 
 ## 🏗 Architecture Overview
 
@@ -22,7 +22,7 @@ PharmaGuard acts as a bridge between raw genomic data and actionable clinical in
 - **Frontend**: Vanilla JavaScript, HTML5, TailwindCSS (via CDN)
 - **Backend**: Python 3.11, FastAPI, Uvicorn
 - **AI & LLM**: Ollama API (`gpt-oss:120b`)
-- **Deployment**: Docker, Railway
+- **Deployment**: Vercel, Docker, Railway
 - **Data Processing**: Custom VCF parser handling VCFv4.2 format
 
 ## 🛠 Installation Instructions
@@ -77,14 +77,22 @@ PharmaGuard acts as a bridge between raw genomic data and actionable clinical in
 
 ## Deployment Instructions
 
-### Option A: Railway (Recommended)
+### Option A: Vercel (current live demo)
+
+Vercel auto-detects the FastAPI app at `app/main.py`; `vercel.json` bundles `Frontend/` into the function and raises the timeout to 60 s for the LLM calls.
+
+1. Import the GitHub repo in Vercel (or run `npx vercel link`).
+2. Add `OLLAMA_API_KEY` under **Settings -> Environment Variables** (and optionally `OLLAMA_MODEL`).
+3. Deploy with `npx vercel deploy --prod`, or push to `main` once the repo is connected.
+
+### Option B: Railway
 
 1. Push your repository to GitHub.
 2. In Railway choose **New Project** -> **Deploy from GitHub repo** and select the repository.
 3. In the **Variables** tab add `OLLAMA_API_KEY`.
 4. Railway builds the `Dockerfile`, which listens on the injected `$PORT` (default 8000).
 
-### Option B: Docker
+### Option C: Docker
 
 ```bash
 docker build -t pharmaguard .

@@ -1,0 +1,7 @@
+.env
+tests
+scripts
+.pytest_cache
+Dockerfile
+.dockerignore
+requirements-dev.txt

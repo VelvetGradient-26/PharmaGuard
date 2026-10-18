@@ -74,8 +74,21 @@
     errorMessage.textContent = "";
   }
 
+  // Everything rendered via innerHTML comes from a user-supplied VCF, form field or LLM.
+  function esc(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (ch) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;",
+    }[ch]));
+  }
+
   function severityPillClass(severity) {
     switch ((severity || "").toLowerCase()) {
+      case "unknown":
+        return "bg-slate-200 text-slate-700";
       case "critical":
         return "bg-red-100 text-red-700";
       case "high":
@@ -116,6 +129,13 @@
       };
     }
 
+    if (normalizedSeverity === "unknown") {
+      return {
+        card: "border-slate-300 bg-gradient-to-br from-slate-50 to-slate-100 dark:border-slate-600 dark:from-slate-800 dark:to-slate-800",
+        title: "text-slate-700 dark:text-slate-300",
+      };
+    }
+
     // Default (Normal / Standard Risk)
     return {
       card: "border-emerald-200 bg-gradient-to-br from-emerald-50 to-lime-50 dark:border-emerald-700 dark:from-slate-800 dark:to-slate-800",
@@ -145,7 +165,10 @@
 
       const data = await response.json();
       isValidFile = Boolean(data.valid);
-      setStatus(`Valid VCF detected. Variants found: ${data.variant_count ?? 0}`);
+      const warningNote = (data.warnings || []).length
+        ? ` (${data.warnings.length} warning${data.warnings.length > 1 ? "s" : ""}: ${data.warnings.join(" ")})`
+        : "";
+      setStatus(`Valid VCF detected. Variants found: ${data.variant_count ?? 0}${warningNote}`);
       setRunState(false);
     } catch (err) {
       isValidFile = false;
@@ -182,29 +205,44 @@
         .map((v) => v.rsid)
         .filter(Boolean);
 
+      const warnings = (item.warnings || [])
+        .map((w) => `<li>${esc(w)}</li>`)
+        .join("");
+      const confidence =
+        typeof risk.confidence_score === "number"
+          ? `${Math.round(risk.confidence_score * 100)}%`
+          : "N/A";
+
       return `
         <article class="rounded-xl border p-4 ${cardTheme.card}">
           <div class="flex flex-wrap items-center justify-between gap-3">
-            <h4 class="text-base font-bold ${cardTheme.title}">${
+            <h4 class="text-base font-bold ${cardTheme.title}">${esc(
               item.drug || "Unknown Drug"
-            }</h4>
+            )}</h4>
             <span class="inline-flex rounded-full px-3 py-1 text-xs font-semibold ${severityPillClass(
               risk.severity
-            )}">${risk.risk_label || "Unknown"} | ${
-        risk.severity || "none"
-      }</span>
+            )}">${esc(risk.risk_label || "Unknown")} | ${esc(
+        risk.severity || "unknown"
+      )}</span>
           </div>
           <div class="mt-3 grid gap-2 text-sm text-slate-600 dark:text-slate-300">
-            <p><strong>Gene:</strong> ${profile.primary_gene || "N/A"}</p>
-            <p><strong>Phenotype:</strong> ${profile.phenotype || "N/A"}</p>
-            <p><strong>Diplotype:</strong> ${profile.diplotype || "N/A"}</p>
+            <p><strong>Gene:</strong> ${esc(profile.primary_gene || "N/A")}</p>
+            <p><strong>Phenotype:</strong> ${esc(profile.phenotype || "N/A")}</p>
+            <p><strong>Diplotype:</strong> ${esc(profile.diplotype || "N/A")}</p>
             <p><strong>Detected Variants:</strong> ${
-              variants.length ? variants.join(", ") : "None"
+              variants.length ? esc(variants.join(", ")) : "None"
             }</p>
-            <p><strong>Recommendation:</strong> ${
+            <p><strong>Confidence:</strong> ${esc(confidence)}</p>
+            <p><strong>Recommendation:</strong> ${esc(
               recommendation.recommendation_summary || "N/A"
-            }</p>
-            <p><strong>Explanation:</strong> ${llm.summary || "N/A"}</p>
+            )}</p>
+            <p><strong>Explanation:</strong> ${esc(llm.summary || "N/A")}</p>
+            ${
+              warnings
+                ? `<ul class="list-disc pl-5 text-xs text-amber-700 dark:text-amber-300">${warnings}</ul>`
+                : ""
+            }
+            <p class="text-xs italic text-slate-500">${esc(item.disclaimer || "")}</p>
           </div>
         </article>
       `;

@@ -1,6 +1,6 @@
-"""Manual smoke test for the Gemini integration (makes a live API call).
+"""Manual smoke test for the Ollama integration (makes a live API call).
 
-Run from the repo root: python scripts/smoke_gemini.py
+Run from the repo root: python -m scripts.smoke_llm
 """
 from app.services.llm_service import generate_explanation
 

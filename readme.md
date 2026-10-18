@@ -14,14 +14,14 @@ PharmaGuard acts as a bridge between raw genomic data and actionable clinical in
 
 1. **Frontend Client**: A lightweight, responsive interface built with Vanilla JS and TailwindCSS captures the user's target medications and VCF file.
 2. **VCF Parser & Phenotype Engine**: The FastAPI backend parses the raw VCF file, extracts clinically relevant variants (rsIDs, Star alleles), and computes the patient's diplotype and phenotype (e.g., Poor Metabolizer, Normal Metabolizer) based on established CPIC logic.
-3. **Explainable AI Integration**: The clinical parameters are sent to the Google Gemini API (`gemini-2.5-flash`) to generate human-readable, biological mechanism explanations and clinical impact summaries.
+3. **Explainable AI Integration**: The clinical parameters are sent to an Ollama-hosted LLM (`gpt-oss:120b` via the Ollama API) to generate human-readable, biological mechanism explanations and clinical impact summaries.
 4. **Result Delivery**: The processed risk assessment is returned to the frontend, displaying dynamic severity-coded alert cards with options to copy or export the clinical JSON report.
 
 ## 💻 Tech Stack
 
 - **Frontend**: Vanilla JavaScript, HTML5, TailwindCSS (via CDN)
 - **Backend**: Python 3.11, FastAPI, Uvicorn
-- **AI & LLM**: Google Generative AI SDK (Gemini API)
+- **AI & LLM**: Ollama API (`gpt-oss:120b`)
 - **Deployment**: Docker, Railway
 - **Data Processing**: Custom VCF parser handling VCFv4.2 format
 
@@ -50,9 +50,10 @@ PharmaGuard acts as a bridge between raw genomic data and actionable clinical in
 4. **Environment variables**: create a `.env` file in the repo root (see `.env.example`):
 
    ```env
-   GEMINI_API_KEY=your_gemini_api_key_here
+   OLLAMA_API_KEY=your_ollama_api_key_here
    # Optional
-   GEMINI_MODEL=gemini-2.5-flash
+   OLLAMA_MODEL=gpt-oss:120b
+   OLLAMA_HOST=https://ollama.com
    MAX_UPLOAD_BYTES=5242880
    CORS_ORIGINS=https://my-separate-frontend.example   # CORS is off by default (same-origin)
    ```
@@ -80,7 +81,7 @@ PharmaGuard acts as a bridge between raw genomic data and actionable clinical in
 
 1. Push your repository to GitHub.
 2. In Railway choose **New Project** -> **Deploy from GitHub repo** and select the repository.
-3. In the **Variables** tab add `GEMINI_API_KEY`.
+3. In the **Variables** tab add `OLLAMA_API_KEY`.
 4. Railway builds the `Dockerfile`, which listens on the injected `$PORT` (default 8000).
 
 ### Option B: Docker
@@ -124,7 +125,7 @@ Returns `{"status": "PharmaGuard backend running", "message": "Ready for VCF ana
 ### `POST /full-analysis`
 
 - **Payload**: `multipart/form-data` (`file`, `drugs`: repeated field or comma-separated, e.g. `WARFARIN,CODEINE`). Supported: CODEINE, WARFARIN, CLOPIDOGREL, SIMVASTATIN, AZATHIOPRINE, FLUOROURACIL.
-- **Response**: always a JSON **array**, one object per drug, with `risk_assessment`, `pharmacogenomic_profile`, `clinical_recommendation`, `llm_generated_explanation` (with `source`: `gemini` | `fallback` | `static`), `warnings`, `quality_metrics` and a `disclaimer`.
+- **Response**: always a JSON **array**, one object per drug, with `risk_assessment`, `pharmacogenomic_profile`, `clinical_recommendation`, `llm_generated_explanation` (with `source`: `ollama` | `fallback` | `static`), `warnings`, `quality_metrics` and a `disclaimer`.
 - **Errors**: `400` invalid VCF, `413` too large, `422` no or unsupported drug.
 
 ## ⚠️ Limitations

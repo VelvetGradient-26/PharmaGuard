@@ -19,7 +19,7 @@ def fake_llm(monkeypatch):
         calls.append(kwargs)
         return {
             "summary": "stub", "biological_mechanism": "stub", "clinical_impact": "stub",
-            "cpic_alignment_note": "stub", "variant_citations": kwargs["rsids"], "source": "gemini",
+            "cpic_alignment_note": "stub", "variant_citations": kwargs["rsids"], "source": "ollama",
         }
 
     monkeypatch.setattr(full_analysis, "generate_explanation", fake)
@@ -109,11 +109,71 @@ def test_llm_called_once_per_covered_drug(fake_llm):
 def test_llm_failure_falls_back_with_200(monkeypatch):
     from app.services import llm_service
 
-    def boom():
-        raise RuntimeError("no key")
+    def boom(*args, **kwargs):
+        raise llm_service.requests.ConnectionError("offline")
 
     monkeypatch.undo()
-    monkeypatch.setattr(llm_service, "_get_client", boom)
+    monkeypatch.setattr(llm_service.requests, "post", boom)
     r = post(sample("VCF/PATIENT_003.vcf"), ["CODEINE"])
     assert r.status_code == 200
     assert r.json()[0]["llm_generated_explanation"]["source"] == "fallback"
+
+
+def test_ollama_response_is_parsed_and_authenticated(monkeypatch):
+    import json
+    from app.services import llm_service
+
+    seen = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"message": {"content": json.dumps({
+                "summary": "s", "biological_mechanism": "b", "clinical_impact": "c",
+                "cpic_alignment_note": "n", "variant_citations": ["rs1"],
+            })}}
+
+    def fake_post(url, headers, json, timeout):
+        seen.update(url=url, headers=headers, body=json)
+        return FakeResponse()
+
+    monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+    monkeypatch.setattr(llm_service.requests, "post", fake_post)
+    out = llm_service.generate_explanation("DPYD", "FLUOROURACIL", "IM", "Adjust Dosage", "rec", ["rs1"])
+
+    assert out["source"] == "ollama" and out["summary"] == "s"
+    assert seen["url"].endswith("/api/chat")
+    assert seen["headers"]["Authorization"] == "Bearer test-key"
+    assert seen["body"]["model"] == llm_service.OLLAMA_MODEL
+    assert seen["body"]["stream"] is False
+
+
+def test_missing_api_key_falls_back(monkeypatch):
+    from app.services import llm_service
+
+    monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+    out = llm_service.generate_explanation("DPYD", "FLUOROURACIL", "IM", "Adjust Dosage", "rec", ["rs1"])
+    assert out["source"] == "fallback" and out["error"] == "ValueError"
+
+
+def test_empty_model_output_is_retried(monkeypatch):
+    import json
+    from app.services import llm_service
+
+    contents = iter(["", json.dumps({
+        "summary": "s", "biological_mechanism": "b", "clinical_impact": "c",
+        "cpic_alignment_note": "n", "variant_citations": [],
+    })])
+
+    monkeypatch.setattr(llm_service, "_chat", lambda prompt: next(contents))
+    out = llm_service.generate_explanation("DPYD", "FLUOROURACIL", "IM", "Adjust Dosage", "rec", [])
+    assert out["source"] == "ollama"
+
+
+def test_code_fenced_json_is_accepted():
+    from app.services.llm_service import _parse_json
+
+    assert _parse_json('```json\n{"a": 1}\n```') == {"a": 1}
+    assert _parse_json('{"a": 1}') == {"a": 1}

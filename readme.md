@@ -27,111 +27,121 @@ PharmaGuard acts as a bridge between raw genomic data and actionable clinical in
 
 ## 🛠 Installation Instructions
 
-To run PharmaGuard locally, follow these steps:
+1. **Clone the repository**
 
-1.  **Clone the repository**
+   ```bash
+   git clone https://github.com/VelvetGradient-26/PharmaGuard.git
+   cd PharmaGuard
+   ```
 
-    ```bash
-    git clone [https://github.com/yourusername/pharmaguard.git](https://github.com/yourusername/pharmaguard.git)
-    cd pharmaguard
+2. **Set up a virtual environment**
 
-    ```
+   ```bash
+   python -m venv venv
+   source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```
 
-2.  **Set up a Virtual Environment**
+3. **Install dependencies** (add `requirements-dev.txt` instead to also get the test tools)
 
-    ```bash
-    python -m venv venv
-    source venv/bin/activate  # On Windows: venv\Scripts\activate
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-    ```
+4. **Environment variables**: create a `.env` file in the repo root (see `.env.example`):
 
-3.  **Install Dependencies**
-    Install the required Python packages (including `fastapi`, `uvicorn`, `google-genai`, and `python-multipart`).
-    ```bash
-    pip install -r requirements.txt
+   ```env
+   GEMINI_API_KEY=your_gemini_api_key_here
+   # Optional
+   GEMINI_MODEL=gemini-2.5-flash
+   MAX_UPLOAD_BYTES=5242880
+   CORS_ORIGINS=https://my-separate-frontend.example   # CORS is off by default (same-origin)
+   ```
 
-        ```
+   Without a key the analysis still runs; explanations fall back to static text (`"source": "fallback"`).
 
-4.  **Environment Variables**
-    Create a `.env` file in the root directory and add your Google Gemini API key:
-    ```env
-    GEMINI_API_KEY=your_gemini_api_key_here
+5. **Run the application**
 
-        ```
+   ```bash
+   uvicorn app.main:app --reload
+   ```
 
-5.  **Run the Application**
+   Open `http://127.0.0.1:8000/`.
 
-    ```bash
-    uvicorn app.main:app --reload
+6. **Run the tests**
 
-    ```
-
-Navigate to `http://127.0.0.1:8000/` to view the application.
+   ```bash
+   pip install -r requirements-dev.txt
+   python -m pytest
+   ```
 
 ## Deployment Instructions
 
 ### Option A: Railway (Recommended)
 
 1. Push your repository to GitHub.
-2. Log into Railway and click **New Project** -> **Deploy from GitHub repo**.
-3. Select your PharmaGuard repository.
-4. Go to the **Variables** tab in your Railway dashboard and add:
-   - `GEMINI_API_KEY`: `your_actual_api_key`
-
-5. Railway will automatically detect the Python environment and install dependencies from `requirements.txt`. It will bind to the `$PORT` environment variable.
-6. Once built, Railway will provide a live HTTPS URL.
+2. In Railway choose **New Project** -> **Deploy from GitHub repo** and select the repository.
+3. In the **Variables** tab add `GEMINI_API_KEY`.
+4. Railway builds the `Dockerfile`, which listens on the injected `$PORT` (default 8000).
 
 ### Option B: Docker
 
-The project includes a ready-to-use `Dockerfile` based on `python:3.11-slim`.
+```bash
+docker build -t pharmaguard .
+docker run -p 8000:8000 --env-file .env pharmaguard
+```
 
-1. **Build the image**:
+## 🧬 How phenotypes are determined
 
-   ```bash
-   docker build -t pharmaguard .
+Each star allele has a function value (CPIC activity-score convention: 1 normal, 0 none, in between decreased, CYP2C19 `*17` 1.5 increased) defined in `app/config/constants.py`. A diplotype's score is the sum of its two alleles and is mapped to a phenotype per gene (e.g. DPYD `*1/*2A` has score 1 and is an Intermediate Metabolizer; `*2A/*2A` is a Poor Metabolizer). Zygosity comes from the genotype (`0/1` = one copy, `1/1` = two).
 
-   ```
+The engine fails safe rather than assuming "normal":
 
-2. **Run the container** (Exposes port 8000):
+- an allele with no function mapping, a no-call genotype, or more than two variant alleles in a gene gives **Indeterminate**;
+- a gene with no records in the VCF gives **Unknown** (not wild-type);
+- several heterozygous variants in one gene are assumed to be on opposite chromosomes (VCFs are unphased) and the result carries lower confidence and a warning.
 
-   ```bash
-   docker run -p 8000:8000 --env-file .env pharmaguard
+`confidence_score` is a heuristic data-completeness score (0.95 clean call, 0.75 phase-ambiguous, 0 uninterpretable), not a statistical probability.
 
-   ```
+## 📄 Input VCF requirements
+
+- `##fileformat=VCFv4.x`, a `#CHROM` header line, and a `GT` field for the first sample column (extra samples are ignored with a warning).
+- Records must carry `GENE=`, `STAR=` and `RS=` INFO tags for one of CYP2D6, CYP2C19, CYP2C9, SLCO1B1, TPMT, DPYD. Raw sequencer output without these tags is **not** interpreted; there is no rsID/position lookup table yet.
+- Include reference (`0/0`) records for sites you tested so a gene counts as genotyped.
+- Max upload size is 5 MB (`MAX_UPLOAD_BYTES`).
 
 ## 📖 API Documentation
 
 ### `GET /health`
 
-Returns the operational status of the backend.
-**Response**: `{"status": "PharmaGuard backend running", "message": "Ready for VCF analysis"}`
+Returns `{"status": "PharmaGuard backend running", "message": "Ready for VCF analysis"}`.
 
 ### `POST /validate-vcf`
 
-Validates the structural integrity of an uploaded VCF file.
-
-- **Payload**: `multipart/form-data` (file)
-- **Response**: `{"valid": true, "variant_count": <int>}`
+- **Payload**: `multipart/form-data` (`file`)
+- **Response**: `{"valid": true, "variant_count": <int>, "genes_covered": [...], "warnings": [...]}`
+- **Errors**: `400` invalid or non-UTF-8 VCF, `413` file too large.
 
 ### `POST /full-analysis`
 
-Runs the complete pharmacogenomic pipeline against the selected drugs.
+- **Payload**: `multipart/form-data` (`file`, `drugs`: repeated field or comma-separated, e.g. `WARFARIN,CODEINE`). Supported: CODEINE, WARFARIN, CLOPIDOGREL, SIMVASTATIN, AZATHIOPRINE, FLUOROURACIL.
+- **Response**: always a JSON **array**, one object per drug, with `risk_assessment`, `pharmacogenomic_profile`, `clinical_recommendation`, `llm_generated_explanation` (with `source`: `gemini` | `fallback` | `static`), `warnings`, `quality_metrics` and a `disclaimer`.
+- **Errors**: `400` invalid VCF, `413` too large, `422` no or unsupported drug.
 
-- **Payload**: `multipart/form-data` (file, list of drugs e.g., "WARFARIN", "CODEINE")
-- **Response**: Returns a comprehensive JSON array containing the `risk_assessment`, `pharmacogenomic_profile`, `clinical_recommendation`, and the `llm_generated_explanation` for each targeted drug.
+## ⚠️ Limitations
 
-## 🧪 Usage Examples & Sample VCFs
+- Warfarin guidance uses CYP2C9 only (no VKORC1/CYP4F2); azathioprine uses TPMT only (no NUDT15); CYP2D6 copy-number variation is not detected, so ultrarapid metabolizers are not identified.
+- Allele function tables are a subset of CPIC's and should be reviewed against the current CPIC tables before any real use.
+- Research prototype: not a medical device, and not for treatment decisions.
 
-1. Open the Analysis Workspace.
-2. Select target medications from the list (e.g., Warfarin, Codeine, Fluorouracil).
-3. Upload a patient VCF file. For testing, you can use the sample files provided in the repository:
-   - `test.vcf`: A minimal mock file containing CYP2D6 (*4) and CYP2C9 (*3) mutations.
-   - `PATIENT_002.vcf`: Simulated patient with significant pathogenic variants.
-   - `PATIENT_003.vcf`: Simulated patient data representing a different diplotype profile.
-   - `TC_P1_PATIENT_001_Normal.vcf`: Simulated baseline normal patient.
+## 🧪 Sample VCFs
 
-4. Click **Run Analysis** to generate the AI-powered clinical report.
-5. Use the **Export JSON** or **Copy JSON** buttons to extract the findings.
+Files are in `VCF/` (plus `test.vcf` in the repo root):
+
+- `test.vcf` and `VCF/TC_P1_PATIENT_001_Normal.vcf`: baseline patient, CYP2D6 `*1/*2` (normal), everything else wild-type.
+- `VCF/PATIENT_002.vcf`: CYP2C19 `*2/*2` (PM), CYP2C9 `*2/*3` (PM), SLCO1B1 `*1/*5` (decreased).
+- `VCF/PATIENT_003.vcf`: heterozygous DPYD `*2A`, CYP2D6 `*4`, CYP2C19 `*3` (all IM), TPMT `*3A/*3A` (PM), SLCO1B1 `*15/*15` (poor).
+
+Usage: open the Analysis Workspace, select medications, upload a VCF, click **Run Analysis**, then **Export JSON** / **Copy JSON**.
 
 ## 👥 Team Members
 

@@ -1,7 +1,5 @@
-fastapi
-uvicorn
-pydantic
-python-multipart
-requests
-python-dotenv
-google-genai
+fastapi==0.146.0
+uvicorn==0.54.0
+python-multipart==0.0.32
+python-dotenv==1.2.4
+google-genai==2.31.0
